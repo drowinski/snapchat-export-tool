@@ -1,0 +1,43 @@
+[project]
+name = "snapchat-export-tool"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.13.4",
+    "rich>=15.0.0",
+    "timezonefinder>=8.2.4",
+    "typer>=0.25.1",
+]
+
+[project.scripts]
+snapchatexporttool = "snapchat_export_tool.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.409",
+    "pytest>=9.0.3",
+    "ruff>=0.15.13",
+]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff.lint]
+select = [
+    "ANN", # annotations
+    "B", # bugbear
+    "E", # pycodestyle
+    "F", # pyflakes
+    "I", # isort
+    "UP", # pyupgrade
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

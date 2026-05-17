@@ -1,6 +1,8 @@
 import hashlib
 import logging
 from collections.abc import Collection
+from datetime import UTC, datetime
+from itertools import combinations
 from os import PathLike
 from pathlib import Path
 from typing import NamedTuple
@@ -12,6 +14,7 @@ from snapchat_export_tool.exiftool import (
     set_video_tags,
 )
 from snapchat_export_tool.metadata import MediaType, Memory
+from snapchat_export_tool.utils import get_kilometers_between_locations
 
 logger = logging.getLogger(__name__)
 
@@ -92,19 +95,35 @@ class FilepathWithMemory(NamedTuple):
 def match_files_with_memories(
     filepaths: Collection[Path], memories: Collection[Memory]
 ) -> list[FilepathWithMemory]:
+    # We will be matching JSON entries to media files by type and timestamp.
+    media_type_and_timestamp_to_memory_group: dict[
+        tuple[MediaType, float], list[Memory]
+    ] = {}
+    for memory in memories:
+        media_type_and_timestamp_to_memory_group.setdefault(
+            (memory.media_type, memory.date.timestamp()), []
+        ).append(memory)
+
+    # We've grouped JSON entries by type and timestamp but each entry in a group
+    # may still be unique based on location.
+    # There is no way to determine which location belongs to which file,
+    # so we consolidate each group into one Memory that works for any file.
+    media_type_and_timestamp_to_memory: dict[tuple[MediaType, float], Memory] = (
+        _consolidate_memory_groups_based_on_location(
+            media_type_and_timestamp_to_memory_group
+        )
+    )
+
+    # Overlays will receive the same metadata as the main files they belong to.
     id_to_overlay_filepath: dict[str, Path] = {
         _get_id_from_filename(p.name): p
         for p in filepaths
         if p.name.endswith("overlay.png")
     }
 
-    media_type_and_timestamp_to_memory: dict[str, Memory] = {
-        f"{m.media_type.name}:{m.date.timestamp()}": m for m in memories
-    }
-
-    filepaths_with_memory: list[FilepathWithMemory] = []
+    filepaths_with_memories: list[FilepathWithMemory] = []
     for filepath in filepaths:
-        suffix = filepath.suffix.lower() # Satisfy PyRight
+        suffix = filepath.suffix.lower()  # Satisfy PyRight
         match suffix:
             case ".jpg" | ".jpeg":
                 media_type = MediaType.IMAGE
@@ -114,25 +133,74 @@ def match_files_with_memories(
                 continue
 
         memory = media_type_and_timestamp_to_memory.get(
-            f"{media_type.name}:{filepath.stat().st_mtime}"
+            (media_type, filepath.stat().st_mtime)
         )
 
         if not memory:
-            logger.warning(
-                f"No memory metadata found for file: '{filepath.name}'\n"
-                f"Keyed by type {media_type.name} at timestamp {filepath.stat().st_mtime}"
-            )
+            logger.warning(f"No memory metadata found for file: '{filepath.name}'\n")
             continue
 
-        filepaths_with_memory.append(FilepathWithMemory(filepath, memory))
+        filepaths_with_memories.append(FilepathWithMemory(filepath, memory))
 
         overlay_filepath = id_to_overlay_filepath.get(
             _get_id_from_filename(filepath.name)
         )
         if overlay_filepath:
-            filepaths_with_memory.append(FilepathWithMemory(overlay_filepath, memory))
+            filepaths_with_memories.append(FilepathWithMemory(overlay_filepath, memory))
 
-    return filepaths_with_memory
+    return filepaths_with_memories
+
+
+def _consolidate_memory_groups_based_on_location(
+    media_type_and_timestamp_to_memory_group: dict[
+        tuple[MediaType, float], list[Memory]
+    ],
+) -> dict[tuple[MediaType, float], Memory]:
+    result: dict[tuple[MediaType, float], Memory] = {}
+
+    keys_of_dropped_locations: list[tuple[MediaType, float]] = []
+
+    for key, memory_group in media_type_and_timestamp_to_memory_group.items():
+        if len(memory_group) == 1:
+            result[key] = memory_group[0]
+            continue
+
+        locations = [m.location for m in memory_group if m.location is not None]
+        if not locations:
+            result[key] = memory_group[0]
+        elif len(locations) == 1:
+            # If any JSON entry has a location, we pick that one.
+            result[key] = next(m for m in memory_group if m.location)
+        else:
+            # If multiple JSON entries share the same media type and timestamp
+            # but their locations differ, there is no way to match the right
+            # locations to files reliably, so we strip the ones 1 km or more apart.
+            any_far_apart = any(
+                get_kilometers_between_locations(a, b) >= 1
+                for a, b in combinations(locations, 2)
+            )
+            if any_far_apart:
+                keys_of_dropped_locations.append(key)
+            base = next(m for m in memory_group if m.location)
+            result[key] = (
+                base
+                if not any_far_apart
+                else base.model_copy(update={"location": None})
+            )
+
+    if keys_of_dropped_locations:
+        entries = ", ".join(
+            f"{k[0].name} at {datetime.fromtimestamp(k[1], tz=UTC).strftime('%Y-%m-%d %H:%M:%S')}"
+            for k in keys_of_dropped_locations
+        )
+        logger.warning(
+            f"{len(keys_of_dropped_locations)} JSON metadata entries"
+            f" with identical timestamps have conflicting locations:\n"
+            f"[{entries}]\n"
+            f"No location metadata will be applied to those files."
+        )
+
+    return result
 
 
 def write_file_metadata(

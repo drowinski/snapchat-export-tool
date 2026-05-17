@@ -1,6 +1,11 @@
+from math import acos, cos, radians, sin
 from os import PathLike, utime
 from struct import unpack_from
 from zipfile import ZipFile, ZipInfo
+
+from snapchat_export_tool.metadata import Location
+
+EARTH_MEAN_RADIUS = 6371.0088
 
 
 def extract_with_timestamp(
@@ -31,3 +36,12 @@ def get_extended_timestamp(zip_info: ZipInfo) -> int | None:
                 return unpack_from("<i", extra, pos + 5)[0]
         pos += 4 + size
     return None
+
+
+def get_kilometers_between_locations(location1: Location, location2: Location) -> float:
+    value = sin(radians(location1.latitude)) * sin(radians(location2.latitude)) + cos(
+        radians(location1.latitude)
+    ) * cos(radians(location2.latitude)) * cos(
+        radians(location1.longitude - location2.longitude)
+    )
+    return EARTH_MEAN_RADIUS * acos(max(-1.0, min(1.0, value)))

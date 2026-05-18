@@ -32,7 +32,7 @@ def determine_unique_files(memories_dir: str | PathLike[str]) -> set[Path]:
     memories_dir = Path(memories_dir)
 
     id_to_overlay_filepath: dict[str, Path] = {
-        _get_id_from_filename(p.name): p for p in memories_dir.glob("*_*-overlay.png")
+        _get_filename_without_suffix(p.name): p for p in memories_dir.glob("*_*-overlay.png")
     }
 
     class MemoryAndOverlayPaths(NamedTuple):
@@ -44,7 +44,7 @@ def determine_unique_files(memories_dir: str | PathLike[str]) -> set[Path]:
         if memory_filepath.suffix.lower() not in (".jpg", ".jpeg", ".mp4"):
             continue
 
-        memory_id = _get_id_from_filename(memory_filepath.name)
+        memory_id = _get_filename_without_suffix(memory_filepath.name)
         if not memory_id:
             continue
 
@@ -116,7 +116,7 @@ def match_files_with_memories(
 
     # Overlays will receive the same metadata as the main files they belong to.
     id_to_overlay_filepath: dict[str, Path] = {
-        _get_id_from_filename(p.name): p
+        _get_filename_without_suffix(p.name): p
         for p in filepaths
         if p.name.endswith("overlay.png")
     }
@@ -143,7 +143,7 @@ def match_files_with_memories(
         filepaths_with_memories.append(FilepathWithMemory(filepath, memory))
 
         overlay_filepath = id_to_overlay_filepath.get(
-            _get_id_from_filename(filepath.name)
+            _get_filename_without_suffix(filepath.name)
         )
         if overlay_filepath:
             filepaths_with_memories.append(FilepathWithMemory(overlay_filepath, memory))
@@ -217,9 +217,8 @@ def write_file_metadata(
     set_file_tags(exiftool, filepath, memory.date)
 
 
-def _get_id_from_filename(filename: str) -> str:
-    return filename.split("_", 1)[1].rsplit("-", 1)[0]
-
+def _get_filename_without_suffix(filename: str) -> str:
+    return filename.rsplit("-", 1)[0]
 
 def _get_mtime_aware_file_hash(filepath: str | PathLike[str]) -> str:
     filepath = Path(filepath)

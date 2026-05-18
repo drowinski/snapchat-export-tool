@@ -59,6 +59,9 @@ def main(
         bool,
         Option(help="Correct Memory timestamps based on timezones."),
     ] = True,
+    ignore_duplicates: Annotated[
+        bool, Option(help="Do not include duplicate media files in the final output.")
+    ] = False,
     threads: Annotated[
         int,
         Option(
@@ -101,8 +104,16 @@ def main(
         else:
             logger.warning("Location-based timestamp adjustment has been disabled.")
 
-        logger.info("Finding duplicate files...")
-        filepaths = determine_unique_files(memories_dir)
+        if ignore_duplicates:
+            logger.info("Determining duplicate files...")
+            filepaths = determine_unique_files(memories_dir)
+        else:
+            filepaths = [
+                p
+                for p in memories_dir.iterdir()
+                if p.suffix in (".jpg", ".jpeg", ".mp4", ".png")
+            ]
+
 
         logger.info("Matching memory metadata to files...")
         filepaths_with_memories = match_files_with_memories(filepaths, memories)

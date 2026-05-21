@@ -185,21 +185,6 @@ class ExiftoolException(Exception):
     pass
 
 
-def fix_file_extension(exiftool: Exiftool, filepath: str | PathLike[str]) -> Path:
-    filepath = Path(filepath)
-    result = exiftool.get_file_tags(("FileTypeExtension",), filepath)
-
-    new_extension = result.get("FileTypeExtension")
-    if not new_extension:
-        raise ExiftoolException("Could not determine file extension.")
-
-    new_extension = f".{new_extension.lower()}"
-    if filepath.suffix.lower() == new_extension:
-        return filepath
-
-    return filepath.rename(filepath.with_suffix(new_extension))
-
-
 def set_file_tags(
     exiftool: Exiftool,
     filepath: str | PathLike[str],

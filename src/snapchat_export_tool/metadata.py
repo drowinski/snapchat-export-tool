@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime
 from enum import Enum
+from math import acos, cos, radians, sin
 from os import PathLike
 from zoneinfo import ZoneInfo
 
@@ -9,6 +10,8 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from timezonefinder import TimezoneFinder
 
 logger = logging.getLogger(__name__)
+
+EARTH_MEAN_RADIUS = 6371.0088
 
 
 class MediaType(Enum):
@@ -22,6 +25,14 @@ class Location(BaseModel):
 
     def __hash__(self) -> int:
         return hash((self.latitude, self.longitude))
+
+    def get_kilometers_from(self, location: "Location") -> float:
+        value = sin(radians(self.latitude)) * sin(radians(location.latitude)) + cos(
+            radians(self.latitude)
+        ) * cos(radians(location.latitude)) * cos(
+            radians(self.longitude - location.longitude)
+        )
+        return EARTH_MEAN_RADIUS * acos(max(-1.0, min(1.0, value)))
 
 
 class Memory(BaseModel):
@@ -74,27 +85,34 @@ def load_memories_from_json(
         try:
             memories.append(Memory.model_validate(json_memory))
         except ValidationError as error:
-            logging.error("Could not validate memory.", exc_info=error, stack_info=True)
+            logging.error(
+                "Could not validate a Memory. The JSON might be malformed.",
+                exc_info=error,
+            )
 
     return memories
 
 
-def localize_date(
-    memory: Memory, timezone_finder: TimezoneFinder | None = None
-) -> Memory:
-    if memory.location is None:
-        return memory
+def localize_memory_dates(memories: list[Memory]) -> list[Memory]:
+    result: list[Memory] = []
+    with TimezoneFinder() as timezone_finder:
+        for memory in memories:
+            if memory.location is None:
+                result.append(memory)
+                continue
 
-    if not timezone_finder:
-        timezone_finder = TimezoneFinder()
+            timezone_str = timezone_finder.timezone_at(
+                lat=memory.location.latitude, lng=memory.location.longitude
+            )
 
-    timezone_str = timezone_finder.timezone_at(
-        lat=memory.location.latitude, lng=memory.location.longitude
-    )
+            if timezone_str is None:
+                result.append(memory)
+                continue
 
-    if timezone_str is None:
-        return memory
+            result.append(
+                memory.model_copy(
+                    update={"date": memory.date.astimezone(ZoneInfo(timezone_str))}
+                )
+            )
 
-    return memory.model_copy(
-        update={"date": memory.date.astimezone(ZoneInfo(timezone_str))}
-    )
+    return result

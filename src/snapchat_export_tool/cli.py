@@ -6,27 +6,33 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Lock
 from typing import Annotated
-from zipfile import BadZipFile, ZipFile
 
 from rich.logging import RichHandler
 from rich.progress import Progress
 from rich.prompt import Confirm
-from timezonefinder import TimezoneFinder
 from typer import Abort, Argument, Exit, Option, Typer
 
 from snapchat_export_tool.exiftool import (
     Exiftool,
     ExiftoolException,
-    fix_file_extension,
 )
 from snapchat_export_tool.files import (
     FilepathWithMemory,
-    determine_unique_files,
+    determine_media_filepaths,
+    determine_unique_media_filepaths,
+    fix_file_extension,
     match_files_with_memories,
     write_file_metadata,
 )
-from snapchat_export_tool.metadata import load_memories_from_json, localize_date
-from snapchat_export_tool.utils import extract_with_timestamp
+from snapchat_export_tool.metadata import (
+    load_memories_from_json,
+    localize_memory_dates,
+)
+from snapchat_export_tool.zip import (
+    extract_json_file,
+    extract_media_files,
+    open_zip_files,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,34 +92,32 @@ def main(
         temp_dir = Path(temp_dir)
 
         logger.info("Extracting files...")
-        extract_zip_files(input_paths, temp_dir)
-
-        json_path = temp_dir / "json" / "memories_history.json"
-        memories_dir = temp_dir / "memories"
-
-        output_dir.mkdir(parents=True, exist_ok=True)
+        with open_zip_files(input_paths) as zip_files:
+            try:
+                json_path = extract_json_file(zip_files, temp_dir)
+                memories_dir = extract_media_files(zip_files, temp_dir)
+            except RuntimeError as error:
+                logger.error(error)
+                raise Exit(code=1) from error
 
         logger.info("Parsing JSON...")
-        memories = load_memories_from_json(json_path)
+        try:
+            memories = load_memories_from_json(json_path)
+        except ValueError as error:
+            logger.error(error)
+            raise Exit(code=1) from error
 
         if localize_timestamps:
             logger.info("Adjusting timestamps based on locations...")
-            with TimezoneFinder() as timezone_finder:
-                for index in range(len(memories)):
-                    memories[index] = localize_date(memories[index], timezone_finder)
+            memories = localize_memory_dates(memories)
         else:
             logger.warning("Location-based timestamp adjustment has been disabled.")
 
         if ignore_duplicates:
             logger.info("Determining duplicate files...")
-            filepaths = determine_unique_files(memories_dir)
+            filepaths = determine_unique_media_filepaths(memories_dir)
         else:
-            filepaths = [
-                p
-                for p in memories_dir.iterdir()
-                if p.suffix in (".jpg", ".jpeg", ".mp4", ".png")
-            ]
-
+            filepaths = determine_media_filepaths(memories_dir)
 
         logger.info("Matching memory metadata to files...")
         filepaths_with_memories = match_files_with_memories(filepaths, memories)
@@ -122,49 +126,11 @@ def main(
             logger.error("Could not match any files to metadata.")
             raise Exit(code=1)
 
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         process_all_files(filepaths_with_memories, output_dir, threads)
 
     logger.info(f"Your Memories have been saved to: '{output_dir}'.")
-
-
-def extract_zip_files(input_paths: list[Path], temp_dir: Path) -> None:
-    zip_files: list[ZipFile] = []
-    for input_path in input_paths:
-        try:
-            zip_files.append(ZipFile(input_path))
-        except (IsADirectoryError, BadZipFile) as error:
-            logger.error(f"'{input_path}' is not a valid zip file.")
-            raise Exit(code=1) from error
-
-    zip_file_with_json: ZipFile | None = next(
-        filter(lambda z: "json/memories_history.json" in z.namelist(), zip_files),
-        None,
-    )
-
-    if not zip_file_with_json:
-        logger.error("'memories_history.json' not found.")
-        raise Exit(code=1)
-
-    zip_file_with_json.extract("json/memories_history.json", temp_dir)
-
-    any_memories_found = False
-    for zip_file in zip_files:
-        memories = tuple(m for m in zip_file.namelist() if m.startswith("memories/"))
-        any_memories_found = any_memories_found or len(memories) > 0
-        for file_info in zip_file.infolist():
-            try:
-                extract_with_timestamp(zip_file, file_info, temp_dir)
-            except RuntimeError:
-                logger.warning(
-                    f"Could not extract timestamp for file '{file_info.filename}'."
-                    f" This file will not be processed."
-                )
-                continue
-        zip_file.close()
-
-    if not any_memories_found:
-        logger.error("No media files found.")
-        raise Exit(code=1)
 
 
 def process_all_files(

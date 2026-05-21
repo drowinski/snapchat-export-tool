@@ -9,17 +9,25 @@ from typing import NamedTuple
 
 from snapchat_export_tool.exiftool import (
     Exiftool,
+    ExiftoolException,
     set_file_tags,
     set_image_tags,
     set_video_tags,
 )
 from snapchat_export_tool.metadata import MediaType, Memory
-from snapchat_export_tool.utils import get_kilometers_between_locations
 
 logger = logging.getLogger(__name__)
 
 
-def determine_unique_files(memories_dir: str | PathLike[str]) -> set[Path]:
+def determine_media_filepaths(memories_dir: str | PathLike[str]) -> list[Path]:
+    return [
+        p
+        for p in Path(memories_dir).iterdir()
+        if p.suffix in (".jpg", ".jpeg", ".mp4", ".png")
+    ]
+
+
+def determine_unique_media_filepaths(memories_dir: str | PathLike[str]) -> list[Path]:
     """
     Two or more memory files are duplicates when the contents
     and modification timestamps are the same.
@@ -32,7 +40,8 @@ def determine_unique_files(memories_dir: str | PathLike[str]) -> set[Path]:
     memories_dir = Path(memories_dir)
 
     id_to_overlay_filepath: dict[str, Path] = {
-        _get_filename_without_suffix(p.name): p for p in memories_dir.glob("*_*-overlay.png")
+        _get_filename_without_suffix(p.name): p
+        for p in memories_dir.glob("*_*-overlay.png")
     }
 
     class MemoryAndOverlayPaths(NamedTuple):
@@ -57,12 +66,12 @@ def determine_unique_files(memories_dir: str | PathLike[str]) -> set[Path]:
             )
         )
 
-    filepaths_to_keep: set[Path] = set()
+    filepaths_to_keep: list[Path] = []
     for duplicates in hash_to_potential_duplicates.values():
         if len(duplicates) == 1:
-            filepaths_to_keep.add(duplicates[0].memory_filepath)
+            filepaths_to_keep.append(duplicates[0].memory_filepath)
             if duplicates[0].overlay_filepath:
-                filepaths_to_keep.add(duplicates[0].overlay_filepath)
+                filepaths_to_keep.append(duplicates[0].overlay_filepath)
             continue
 
         overlay_hash_to_duplicates: dict[str, list[MemoryAndOverlayPaths]] = {}
@@ -77,12 +86,12 @@ def determine_unique_files(memories_dir: str | PathLike[str]) -> set[Path]:
         duplicates_without_overlay = overlay_hash_to_duplicates.pop("NO_OVERLAY", [])
 
         if duplicates_without_overlay and len(overlay_hash_to_duplicates) == 0:
-            filepaths_to_keep.add(duplicates_without_overlay[0].memory_filepath)
+            filepaths_to_keep.append(duplicates_without_overlay[0].memory_filepath)
 
         for duplicates_with_overlay in overlay_hash_to_duplicates.values():
-            filepaths_to_keep.add(duplicates_with_overlay[0].memory_filepath)
+            filepaths_to_keep.append(duplicates_with_overlay[0].memory_filepath)
             assert duplicates_with_overlay[0].overlay_filepath
-            filepaths_to_keep.add(duplicates_with_overlay[0].overlay_filepath)
+            filepaths_to_keep.append(duplicates_with_overlay[0].overlay_filepath)
 
     return filepaths_to_keep
 
@@ -176,8 +185,7 @@ def _consolidate_memory_groups_based_on_location(
             # but their locations differ, there is no way to match the right
             # locations to files reliably, so we strip the ones 1 km or more apart.
             any_far_apart = any(
-                get_kilometers_between_locations(a, b) >= 1
-                for a, b in combinations(locations, 2)
+                a.get_kilometers_from(b) >= 1 for a, b in combinations(locations, 2)
             )
             if any_far_apart:
                 keys_of_dropped_locations.append(key)
@@ -197,10 +205,25 @@ def _consolidate_memory_groups_based_on_location(
             f"{len(keys_of_dropped_locations)} JSON metadata entries"
             f" with identical timestamps have conflicting locations:\n"
             f"[{entries}]\n"
-            f"No location metadata will be applied to those files."
+            f"No location metadata will be applied to their corresponding files."
         )
 
     return result
+
+
+def fix_file_extension(exiftool: Exiftool, filepath: str | PathLike[str]) -> Path:
+    filepath = Path(filepath)
+    result = exiftool.get_file_tags(("FileTypeExtension",), filepath)
+
+    new_extension = result.get("FileTypeExtension")
+    if not new_extension:
+        raise ExiftoolException("Could not determine file extension.")
+
+    new_extension = f".{new_extension.lower()}"
+    if filepath.suffix.lower() == new_extension:
+        return filepath
+
+    return filepath.rename(filepath.with_suffix(new_extension))
 
 
 def write_file_metadata(
@@ -219,6 +242,7 @@ def write_file_metadata(
 
 def _get_filename_without_suffix(filename: str) -> str:
     return filename.rsplit("-", 1)[0]
+
 
 def _get_mtime_aware_file_hash(filepath: str | PathLike[str]) -> str:
     filepath = Path(filepath)
